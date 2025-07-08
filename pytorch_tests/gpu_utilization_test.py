@@ -65,7 +65,6 @@ class IntensiveGPUWorkload:
                     nn.Conv2d(256, 128, kernel_size=3, padding=1),
                     nn.Conv2d(128, 64, kernel_size=3, padding=1),
                     nn.Conv2d(64, 32, kernel_size=3, padding=1),
-                    nn.Conv2d(32, 3, kernel_size=3, padding=1)
                 ])
                 
                 self.batch_norms = nn.ModuleList([
@@ -79,16 +78,19 @@ class IntensiveGPUWorkload:
                     nn.BatchNorm2d(32),
                 ])
                 
-                # 더 작은 Dense 레이어들
+                # 마지막 컨볼루션 출력 계산: 32 channels × 4 × 4 = 512
+                self.final_conv = nn.Conv2d(32, 32, kernel_size=3, padding=1)
+                
+                # 차원 맞춘 Dense 레이어들 (32 × 4 × 4 = 512)
                 self.dense_layers = nn.ModuleList([
-                    nn.Linear(256, 512),
                     nn.Linear(512, 256),
-                    nn.Linear(256, 100)
+                    nn.Linear(256, 128),
+                    nn.Linear(128, 100)
                 ])
                 
             def forward(self, x):
                 # 컨볼루션 레이어들
-                for i, (conv, bn) in enumerate(zip(self.conv_layers[:-1], self.batch_norms)):
+                for i, (conv, bn) in enumerate(zip(self.conv_layers, self.batch_norms)):
                     x = conv(x)
                     x = F.relu(x)
                     x = bn(x)
@@ -99,11 +101,13 @@ class IntensiveGPUWorkload:
                     elif i in [5, 7]:
                         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
                 
-                x = self.conv_layers[-1](x)
+                # 마지막 컨볼루션
+                x = self.final_conv(x)
+                x = F.relu(x)
                 
-                # 글로벌 평균 풀링
+                # 글로벌 평균 풀링 (32 × 4 × 4 = 512)
                 x = F.adaptive_avg_pool2d(x, (4, 4))
-                x = x.view(x.size(0), -1)
+                x = x.view(x.size(0), -1)  # (batch_size, 512)
                 
                 # Dense 레이어들
                 for dense in self.dense_layers:
