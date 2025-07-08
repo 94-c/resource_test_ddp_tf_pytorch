@@ -60,8 +60,13 @@ resource_test_ddp_tf_pytorch/
 ├── README.md                              # 프로젝트 문서
 ├── requirements.txt                       # 의존성 목록
 ├── run_tests.py                          # 메인 테스트 실행 스크립트
+├── MIG_GPU_메트릭_차이점_설명.txt         # MIG 환경 GPU 모니터링 가이드 (NEW!)
 ├── utils/
 │   └── resource_monitor.py               # 리소스 모니터링 유틸리티
+├── docs/                                 # 상세 문서 디렉토리 (NEW!)
+│   ├── MIG_GPU_Utilization_Metrics.md   # MIG GPU 사용률 메트릭 계산 가이드
+│   ├── prometheus_queries.md            # 프로메테우스 쿼리 모음
+│   └── grafana_dashboard.json           # Grafana 대시보드 설정
 ├── pytorch_tests/
 │   ├── cpu_test.py                       # PyTorch CPU 집약적 테스트
 │   ├── memory_test.py                    # PyTorch 메모리 집약적 테스트
@@ -435,6 +440,26 @@ DDP 분산 학습 테스트 실행 시 다음 파일들이 생성됩니다:
 
 - `saved_models/model_final.pth`: 최종 학습된 모델
 - `saved_models/checkpoint_epoch_*.pth`: 중간 체크포인트들 (10 에폭마다)
+
+## 📚 추가 문서
+
+### MIG 환경 GPU 모니터링 가이드
+MIG(Multi-Instance GPU) 환경에서 GPU 사용률 메트릭을 정확히 이해하고 모니터링하는 방법:
+
+📄 **[MIG GPU 메트릭 차이점 설명](./MIG_GPU_메트릭_차이점_설명.txt)**
+- 단순 평균 vs 가중 평균 계산의 차이점
+- 실무에서 프로메테우스 쿼리 활용법
+- DCGM 메트릭 정확한 해석 방법
+- 구체적인 예시와 실전 팁 제공
+
+📁 **[상세 문서 디렉토리](./docs/)**
+- **[MIG GPU 사용률 메트릭 계산 가이드](./docs/MIG_GPU_Utilization_Metrics.md)** - 완전한 기술 문서
+- **[프로메테우스 쿼리 모음](./docs/prometheus_queries.md)** - 실제 사용 가능한 쿼리들
+- **[Grafana 대시보드 설정](./docs/grafana_dashboard.json)** - 즉시 사용 가능한 대시보드
+
+> **💡 TIP**: MIG 환경에서는 단순 평균보다 **가중 평균**을 사용해야 실제 GPU 리소스 사용량을 정확히 파악할 수 있습니다.
+
+---
 
 ## 🔧 문제 해결 (Troubleshooting)
 
