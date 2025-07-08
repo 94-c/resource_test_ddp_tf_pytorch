@@ -28,27 +28,66 @@ class IntensiveGPUWorkload:
     def __init__(self, duration_minutes=10):
         self.duration_minutes = duration_minutes
         self.duration_seconds = duration_minutes * 60
-        self.device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
         self.stop_event = threading.Event()
         self.workload_threads = []
+        
+        # 안전한 GPU 감지
+        self.device_count = 0
+        self.available_devices = []
         
         if not torch.cuda.is_available():
             print("⚠️  CUDA가 사용 불가능합니다. CPU 모드로 실행됩니다.")
             return
         
-        print(f"✅ CUDA 사용 가능: {self.device_count}개 GPU 감지")
-        for i in range(self.device_count):
-            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-            # GPU 메모리 정보 출력 (디버깅용)
-            try:
-                gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
-                print(f"    총 메모리: {gpu_memory:.1f} GB")
-                if torch.cuda.is_available():
-                    allocated = torch.cuda.memory_allocated(i) / 1024**3
-                    cached = torch.cuda.memory_reserved(i) / 1024**3
-                    print(f"    할당된 메모리: {allocated:.2f} GB, 캐시된 메모리: {cached:.2f} GB")
-            except Exception as e:
-                print(f"    메모리 정보 조회 실패: {e}")
+        # 안전한 GPU 장치 감지
+        try:
+            potential_devices = torch.cuda.device_count()
+            print(f"🔍 감지된 GPU 개수: {potential_devices}")
+            
+            # 각 GPU 장치 개별 검증
+            for i in range(potential_devices):
+                try:
+                    # GPU 장치 접근 테스트
+                    with torch.cuda.device(i):
+                        torch.cuda.empty_cache()
+                        test_tensor = torch.empty(1, device=f'cuda:{i}')
+                        del test_tensor
+                    
+                    # 성공하면 사용 가능한 장치로 추가
+                    self.available_devices.append(i)
+                    print(f"✅ GPU {i}: 접근 가능")
+                    
+                    try:
+                        name = torch.cuda.get_device_name(i)
+                        props = torch.cuda.get_device_properties(i)
+                        gpu_memory = props.total_memory / 1024**3
+                        print(f"  이름: {name}")
+                        print(f"  총 메모리: {gpu_memory:.1f} GB")
+                        print(f"  멀티프로세서: {props.multi_processor_count}")
+                        
+                        # 현재 메모리 사용량
+                        allocated = torch.cuda.memory_allocated(i) / 1024**3
+                        cached = torch.cuda.memory_reserved(i) / 1024**3
+                        print(f"  할당된 메모리: {allocated:.2f} GB, 캐시된 메모리: {cached:.2f} GB")
+                        
+                    except Exception as e:
+                        print(f"  정보 조회 실패: {e}")
+                        
+                except Exception as e:
+                    print(f"❌ GPU {i}: 접근 불가 - {e}")
+                    continue
+            
+            self.device_count = len(self.available_devices)
+            
+            if self.device_count == 0:
+                print("❌ 사용 가능한 GPU가 없습니다.")
+            else:
+                print(f"✅ 사용 가능한 GPU: {self.device_count}개 (인덱스: {self.available_devices})")
+                
+        except Exception as e:
+            print(f"❌ GPU 감지 중 오류: {e}")
+            self.device_count = 0
+            self.available_devices = []
     
     def create_intensive_model(self, device_id):
         """GPU 집약적 모델 생성 (컨테이너 환경 최적화)"""
@@ -223,8 +262,8 @@ class IntensiveGPUWorkload:
         print("   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타날 때까지 기다려주세요...")
         print("   ⚠️  컨테이너 환경에서 안전 모드로 실행됩니다.")
         
-        # 각 GPU에서 단일 워크로드만 실행 (안전성 향상)
-        for device_id in range(self.device_count):
+        # 각 사용 가능한 GPU에서 단일 워크로드만 실행 (안전성 향상)
+        for device_id in self.available_devices:
             thread = threading.Thread(
                 target=self.continuous_gpu_workload,
                 args=(device_id, 0)
@@ -255,7 +294,7 @@ class IntensiveGPUWorkload:
                 
                 # 주기적으로 전체 GPU 메모리 상태 확인
                 try:
-                    for i in range(self.device_count):
+                    for i in self.available_devices:
                         allocated = torch.cuda.memory_allocated(i) / 1024**3
                         reserved = torch.cuda.memory_reserved(i) / 1024**3
                         print(f"    GPU {i} 메모리: {allocated:.2f}GB 할당, {reserved:.2f}GB 예약")
@@ -273,7 +312,7 @@ class IntensiveGPUWorkload:
         
         # 최종 메모리 정리
         try:
-            for i in range(self.device_count):
+            for i in self.available_devices:
                 torch.cuda.empty_cache()
         except Exception:
             pass
@@ -290,13 +329,28 @@ def main():
     # 시스템 정보 출력
     print_system_info()
     
-    # GPU 정보 출력
+    # GPU 정보 출력 (안전한 감지)
     if torch.cuda.is_available():
         print(f"\n🎮 GPU 정보:")
-        for i in range(torch.cuda.device_count()):
-            print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
-            print(f"    메모리: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
-            print(f"    멀티프로세서: {torch.cuda.get_device_properties(i).multi_processor_count}")
+        try:
+            device_count = torch.cuda.device_count()
+            for i in range(device_count):
+                try:
+                    # GPU 접근 테스트
+                    with torch.cuda.device(i):
+                        test_tensor = torch.empty(1, device=f'cuda:{i}')
+                        del test_tensor
+                    
+                    # 정보 출력
+                    print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+                    print(f"    메모리: {torch.cuda.get_device_properties(i).total_memory / 1024**3:.1f} GB")
+                    print(f"    멀티프로세서: {torch.cuda.get_device_properties(i).multi_processor_count}")
+                except Exception as e:
+                    print(f"  GPU {i}: 접근 불가 - {e}")
+        except Exception as e:
+            print(f"  GPU 정보 조회 실패: {e}")
+    else:
+        print("\n❌ CUDA 사용 불가능")
     
     # 리소스 모니터링 시작
     monitor = ResourceMonitor(interval=1)
@@ -330,8 +384,8 @@ def main():
         # 최종 리소스 사용량 확인
         final_usage = monitor.get_current_usage()
         print(f"\n📊 최종 리소스 사용량:")
-        if torch.cuda.is_available():
-            for i in range(torch.cuda.device_count()):
+        if torch.cuda.is_available() and hasattr(gpu_workload, 'available_devices'):
+            for i in gpu_workload.available_devices:
                 gpu_utilization = final_usage.get(f'gpu_{i}_utilization', 0)
                 gpu_memory = final_usage.get(f'gpu_{i}_memory_used', 0)
                 print(f"  GPU {i} 사용률: {gpu_utilization}%")
