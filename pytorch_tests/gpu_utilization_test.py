@@ -262,18 +262,34 @@ class IntensiveGPUWorkload:
         print("   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타날 때까지 기다려주세요...")
         print("   ⚠️  컨테이너 환경에서 안전 모드로 실행됩니다.")
         
+        # 🔍 디버깅 정보 추가
+        print(f"\n🔍 GPU 감지 결과:")
+        print(f"  전체 감지된 GPU: {torch.cuda.device_count()}")
+        print(f"  사용 가능한 GPU 개수: {self.device_count}")
+        print(f"  사용 가능한 GPU 인덱스: {self.available_devices}")
+        
         # 각 사용 가능한 GPU에서 단일 워크로드만 실행 (안전성 향상)
         for device_id in self.available_devices:
-            thread = threading.Thread(
-                target=self.continuous_gpu_workload,
-                args=(device_id, 0)
-            )
-            thread.daemon = True
-            thread.start()
-            self.workload_threads.append(thread)
+            print(f"\n🚀 GPU {device_id}에서 워크로드 시작...")
+            
+            # MIG 환경에서 더 집약적인 사용을 위해 GPU당 2개 워크로드 실행
+            for workload_id in range(2):
+                thread = threading.Thread(
+                    target=self.continuous_gpu_workload,
+                    args=(device_id, workload_id)
+                )
+                thread.daemon = True
+                thread.start()
+                self.workload_threads.append(thread)
+                print(f"  워크로드 {workload_id} 시작됨")
+                
+                # 워크로드 간 시작 간격 (메모리 경합 방지)
+                time.sleep(1)
             
             # GPU 간 시작 간격 (리소스 경합 방지)
             time.sleep(2)
+        
+        print(f"\n✅ 총 {len(self.workload_threads)}개 워크로드 스레드 시작됨")
         
         # 시그널 핸들러 등록
         def signal_handler(signum, frame):
