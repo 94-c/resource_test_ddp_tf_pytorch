@@ -8,7 +8,7 @@ import os
 import sys
 import subprocess
 import argparse
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 def get_available_tests() -> Dict[str, Dict[str, str]]:
     """사용 가능한 테스트 목록 반환"""
@@ -32,7 +32,7 @@ def check_file_exists(file_path: str) -> bool:
     """파일 존재 여부 확인"""
     return os.path.isfile(file_path)
 
-def run_test(test_path: str, additional_args: List[str] = None) -> int:
+def run_test(test_path: str, additional_args: Optional[List[str]] = None) -> int:
     """테스트 실행"""
     if not check_file_exists(test_path):
         print(f"❌ 테스트 파일을 찾을 수 없습니다: {test_path}")
@@ -72,9 +72,10 @@ def print_test_menu():
     print("\n💡 사용법 예시:")
     print("  python run_tests.py pytorch cpu --duration 60")
     print("  python run_tests.py tensorflow memory --num-tensors 20")
-    print("  python run_tests.py pytorch gpu_utilization --skip-conv")
+    print("  python run_tests.py pytorch gpu_utilization --duration 600  # DCGM 메트릭 대응")
     print("  python run_tests.py pytorch ddp_training --epochs 10 --batch-size 64")
     print("  python run_tests.py --list  # 전체 테스트 목록 보기")
+    print("  python run_tests.py --intensive-gpu  # 집약적 GPU 테스트 (DCGM 메트릭용)")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -85,9 +86,10 @@ def main():
   %(prog)s pytorch cpu --duration 120
   %(prog)s tensorflow memory --num-tensors 30
   %(prog)s pytorch gpu_memory --tensor-size 2000
-  %(prog)s tensorflow gpu_utilization --matrix-ops 500
+  %(prog)s tensorflow gpu_utilization --duration 600  # DCGM 메트릭 대응
   %(prog)s pytorch ddp_training --epochs 50 --batch-size 32
   %(prog)s --list
+  %(prog)s --intensive-gpu  # 집약적 GPU 테스트 (DCGM 메트릭용)
 
 테스트 타입:
   cpu              - CPU 집약적 테스트 (행렬 연산, 병렬 처리)
@@ -95,6 +97,9 @@ def main():
   gpu_memory       - GPU 메모리 집약적 테스트 (GPU 텐서 할당)
   gpu_utilization  - GPU 사용률 집약적 테스트 (계산 집약적 연산)
   ddp_training     - 분산 학습 테스트 (DDP 기반 멀티 GPU 학습)
+
+특수 옵션:
+  --intensive-gpu  - DCGM 메트릭에 나타나도록 하는 집약적 GPU 테스트
         """
     )
     
@@ -117,6 +122,9 @@ def main():
     parser.add_argument('--all-tensorflow', action='store_true',
                        help='모든 TensorFlow 테스트 순차 실행')
     
+    parser.add_argument('--intensive-gpu', action='store_true',
+                       help='집약적 GPU 테스트 (DCGM 메트릭에 나타나도록 10분 이상 실행)')
+    
     parser.add_argument('--duration', type=int, default=60,
                        help='테스트 지속 시간 (초, 기본값: 60)')
     
@@ -133,6 +141,47 @@ def main():
     
     tests = get_available_tests()
     
+    # 집약적 GPU 테스트 실행
+    if args.intensive_gpu:
+        print("🔥 집약적 GPU 테스트를 실행합니다...")
+        print("   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타나도록 10분 이상 실행됩니다.")
+        print("   Ctrl+C로 중단할 수 있습니다.")
+        
+        # 기본 지속 시간을 10분으로 설정
+        intensive_duration = max(600, args.duration)
+        additional_args = ['--duration', str(intensive_duration)] + args.additional_args
+        
+        failed_tests = []
+        
+        # PyTorch GPU 집약적 테스트
+        print(f"\n{'='*60}")
+        print("PyTorch GPU 집약적 테스트 시작")
+        print(f"{'='*60}")
+        
+        result = run_test(tests['pytorch']['gpu_utilization'], additional_args)
+        if result != 0:
+            failed_tests.append("pytorch gpu_utilization")
+        
+        print(f"\nPyTorch GPU 집약적 테스트 {'완료' if result == 0 else '실패'}")
+        
+        # TensorFlow GPU 집약적 테스트
+        print(f"\n{'='*60}")
+        print("TensorFlow GPU 집약적 테스트 시작")
+        print(f"{'='*60}")
+        
+        result = run_test(tests['tensorflow']['gpu_utilization'], additional_args)
+        if result != 0:
+            failed_tests.append("tensorflow gpu_utilization")
+        
+        print(f"\nTensorFlow GPU 집약적 테스트 {'완료' if result == 0 else '실패'}")
+        
+        if failed_tests:
+            print(f"\n❌ 실패한 테스트: {', '.join(failed_tests)}")
+            return 1
+        else:
+            print(f"\n✅ 모든 집약적 GPU 테스트가 성공적으로 완료되었습니다!")
+            return 0
+
     # 모든 PyTorch 테스트 실행
     if args.all_pytorch:
         print("🔥 모든 PyTorch 테스트를 순차적으로 실행합니다...")

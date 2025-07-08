@@ -132,6 +132,34 @@ resource_test_ddp_tf_pytorch/
 - `--skip-conv`: 컨볼루션 테스트 건너뛰기
 - `--skip-training`: 학습 테스트 건너뛰기
 
+### ⚡ 집약적 GPU 테스트 (DCGM 메트릭 대응) - NEW!
+DCGM (Data Center GPU Manager) 메트릭에 나타나도록 GPU 사용률을 지속적으로 높게 유지하는 집약적 테스트입니다.
+- `--duration N`: 테스트 지속 시간 (초, 기본값: 600초/10분)
+- **최소 권장 시간**: 10분 이상 (DCGM 메트릭 수집 주기 고려)
+- **지원 메트릭**: `DCGM_FI_PROF_GR_ENGINE_ACTIVE`, `DCGM_FI_DEV_GPU_UTIL`
+- **멀티 GPU 지원**: 모든 GPU에서 동시에 워크로드 실행
+
+#### 집약적 GPU 테스트 사용법
+```bash
+# 간편한 집약적 GPU 테스트 (10분 이상)
+python run_tests.py --intensive-gpu
+
+# 개별 프레임워크 집약적 테스트 (10분)
+python run_tests.py pytorch gpu_utilization --duration 600
+python run_tests.py tensorflow gpu_utilization --duration 600
+
+# 장시간 집약적 테스트 (30분)
+python run_tests.py pytorch gpu_utilization --duration 1800
+```
+
+#### 집약적 GPU 테스트 특징
+- **지속적 높은 사용률**: GPU 사용률을 90% 이상 유지
+- **멀티 GPU 지원**: 각 GPU에서 2개 워크로드 스레드 실행
+- **다양한 연산**: 컨볼루션, 트랜스포머, 행렬 연산, FFT 등 혼합
+- **메모리 관리**: 자동 메모리 압박 방지 및 배치 크기 조정
+- **실시간 모니터링**: 남은 시간 및 진행 상황 표시
+- **안전한 중단**: Ctrl+C로 언제든지 중단 가능
+
 ### DDP 분산 학습 테스트 옵션 (NEW!)
 - `--num-samples N`: 데이터셋 샘플 수 (기본값: 100,000)
 - `--epochs N`: 학습 에폭 수 (기본값: 100)
@@ -207,6 +235,9 @@ python run_tests.py pytorch cpu --duration 600 --matrix-size 3000
 
 # GPU 메모리 한계 테스트
 python run_tests.py pytorch gpu_memory --stress-level 5
+
+# DCGM 메트릭 대응 집약적 GPU 테스트
+python run_tests.py --intensive-gpu
 ```
 
 ### 3. 분산 학습 워크로드 테스트
@@ -225,6 +256,9 @@ python pytorch_tests/ddp_training_test.py --force-single-gpu --epochs 50
 ```bash
 # 실제 워크로드와 유사한 패턴으로 테스트
 python run_tests.py tensorflow gpu_utilization --conv-iterations 1000
+
+# DCGM 메트릭 수집을 위한 장시간 집약적 테스트
+python run_tests.py pytorch gpu_utilization --duration 1800  # 30분
 ```
 
 ## 🔧 개발자 가이드
@@ -291,6 +325,87 @@ PyTorch와 TensorFlow를 사용한 CPU, 메모리, GPU 리소스 테스트
   테스트 지속 시간: 60.2초
 
 ✅ 테스트가 성공적으로 완료되었습니다!
+```
+
+### 집약적 GPU 테스트 실행 (DCGM 메트릭 대응)
+```
+🧪 리소스 테스트 실행기
+PyTorch와 TensorFlow를 사용한 CPU, 메모리, GPU 리소스 테스트
+============================================================
+
+🔥 집약적 GPU 테스트를 실행합니다...
+   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타나도록 10분 이상 실행됩니다.
+   Ctrl+C로 중단할 수 있습니다.
+
+============================================================
+PyTorch GPU 집약적 테스트 시작
+============================================================
+
+🚀 실행 중: pytorch_tests/gpu_utilization_test.py
+   명령어: python pytorch_tests/gpu_utilization_test.py --duration 600
+
+💻 시스템 정보:
+  OS: Linux 5.4.0
+  CPU: Intel Xeon Gold 6230 (40 코어)
+  Memory: 512.0 GB
+  GPU: NVIDIA A100 80GB (4개)
+
+🎮 GPU 정보:
+  GPU 0: NVIDIA A100 80GB PCIe
+    메모리: 81.0 GB
+    멀티프로세서: 108
+  GPU 1: NVIDIA A100 80GB PCIe
+    메모리: 81.0 GB
+    멀티프로세서: 108
+  [...]
+
+🎯 4개 GPU에서 10분 동안 집약적 워크로드 시작
+   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타날 때까지 기다려주세요...
+============================================================
+
+🚀 GPU 0 워크로드 0 시작
+🚀 GPU 0 워크로드 1 시작
+🚀 GPU 1 워크로드 0 시작
+🚀 GPU 1 워크로드 1 시작
+[...]
+
+  GPU 0 워크로드 0: 20 반복 완료, 남은 시간: 538.2초, Loss: 4.6823
+  GPU 1 워크로드 0: 18 반복 완료, 남은 시간: 541.8초, Loss: 4.7291
+  GPU 0 워크로드 1: 19 반복 완료, 남은 시간: 540.1초, Loss: 4.6547
+  [...]
+
+⏱️  진행 중... 남은 시간: 480.3초
+⏱️  진행 중... 남은 시간: 470.1초
+[...]
+
+✅ GPU 0 워크로드 0 완료 (156 반복)
+✅ GPU 0 워크로드 1 완료 (148 반복)
+✅ GPU 1 워크로드 0 완료 (152 반복)
+✅ GPU 1 워크로드 1 완료 (145 반복)
+[...]
+
+🏁 모든 GPU 워크로드 완료
+
+==================================================
+RESOURCE MONITORING SUMMARY
+==================================================
+Duration: 600.2 seconds
+CPU Usage - Avg: 18.7 cores, Max: 28.4 cores
+Memory Usage - Avg: 87.3%, Max: 91.2%
+Memory Usage - Avg: 448.2GB, Max: 467.1GB
+GPU Usage:
+  GPU 0 - Util Avg: 94.8%, Max: 99.2%
+  GPU 0 - Memory Avg: 72.1GB, Max: 78.9GB
+  GPU 1 - Util Avg: 93.1%, Max: 98.7%
+  GPU 1 - Memory Avg: 71.8GB, Max: 78.4GB
+  [...]
+==================================================
+
+🎯 PyTorch GPU 사용률 집약적 테스트 완료!
+   총 실행 시간: 600.2초
+============================================================
+
+✅ 모든 집약적 GPU 테스트가 성공적으로 완료되었습니다!
 ```
 
 ### DDP 분산 학습 테스트 실행
