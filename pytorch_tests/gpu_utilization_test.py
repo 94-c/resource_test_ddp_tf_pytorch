@@ -39,21 +39,28 @@ class IntensiveGPUWorkload:
         print(f"✅ CUDA 사용 가능: {self.device_count}개 GPU 감지")
         for i in range(self.device_count):
             print(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            # GPU 메모리 정보 출력 (디버깅용)
+            try:
+                gpu_memory = torch.cuda.get_device_properties(i).total_memory / 1024**3
+                print(f"    총 메모리: {gpu_memory:.1f} GB")
+                if torch.cuda.is_available():
+                    allocated = torch.cuda.memory_allocated(i) / 1024**3
+                    cached = torch.cuda.memory_reserved(i) / 1024**3
+                    print(f"    할당된 메모리: {allocated:.2f} GB, 캐시된 메모리: {cached:.2f} GB")
+            except Exception as e:
+                print(f"    메모리 정보 조회 실패: {e}")
     
     def create_intensive_model(self, device_id):
-        """GPU 집약적 모델 생성"""
-        class IntensiveModel(nn.Module):
+        """GPU 집약적 모델 생성 (컨테이너 환경 최적화)"""
+        class SafeIntensiveModel(nn.Module):
             def __init__(self):
-                super(IntensiveModel, self).__init__()
-                # 매우 큰 모델로 GPU 사용률 최대화
+                super(SafeIntensiveModel, self).__init__()
+                # 메모리 사용량을 줄인 안전한 모델
                 self.conv_layers = nn.ModuleList([
-                    nn.Conv2d(3, 128, kernel_size=7, padding=3),
-                    nn.Conv2d(128, 256, kernel_size=5, padding=2),
+                    nn.Conv2d(3, 64, kernel_size=5, padding=2),
+                    nn.Conv2d(64, 128, kernel_size=3, padding=1),
+                    nn.Conv2d(128, 256, kernel_size=3, padding=1),
                     nn.Conv2d(256, 512, kernel_size=3, padding=1),
-                    nn.Conv2d(512, 1024, kernel_size=3, padding=1),
-                    nn.Conv2d(1024, 2048, kernel_size=3, padding=1),
-                    nn.Conv2d(2048, 1024, kernel_size=3, padding=1),
-                    nn.Conv2d(1024, 512, kernel_size=3, padding=1),
                     nn.Conv2d(512, 256, kernel_size=3, padding=1),
                     nn.Conv2d(256, 128, kernel_size=3, padding=1),
                     nn.Conv2d(128, 64, kernel_size=3, padding=1),
@@ -62,12 +69,9 @@ class IntensiveGPUWorkload:
                 ])
                 
                 self.batch_norms = nn.ModuleList([
+                    nn.BatchNorm2d(64),
                     nn.BatchNorm2d(128),
                     nn.BatchNorm2d(256),
-                    nn.BatchNorm2d(512),
-                    nn.BatchNorm2d(1024),
-                    nn.BatchNorm2d(2048),
-                    nn.BatchNorm2d(1024),
                     nn.BatchNorm2d(512),
                     nn.BatchNorm2d(256),
                     nn.BatchNorm2d(128),
@@ -75,19 +79,11 @@ class IntensiveGPUWorkload:
                     nn.BatchNorm2d(32),
                 ])
                 
-                # 트랜스포머 레이어 추가
-                self.transformer_layers = nn.ModuleList([
-                    nn.TransformerEncoderLayer(d_model=512, nhead=8, dim_feedforward=2048, batch_first=True)
-                    for _ in range(6)
-                ])
-                
-                # Dense 레이어들
+                # 더 작은 Dense 레이어들
                 self.dense_layers = nn.ModuleList([
-                    nn.Linear(512, 2048),
-                    nn.Linear(2048, 4096),
-                    nn.Linear(4096, 2048),
-                    nn.Linear(2048, 512),
-                    nn.Linear(512, 100)
+                    nn.Linear(256, 512),
+                    nn.Linear(512, 256),
+                    nn.Linear(256, 100)
                 ])
                 
             def forward(self, x):
@@ -97,27 +93,17 @@ class IntensiveGPUWorkload:
                     x = F.relu(x)
                     x = bn(x)
                     
-                    # 다운샘플링과 업샘플링으로 계산량 증가
-                    if i < 5:
+                    # 적절한 다운샘플링
+                    if i in [1, 3]:
                         x = F.max_pool2d(x, 2)
-                    elif i >= 6:
+                    elif i in [5, 7]:
                         x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
                 
                 x = self.conv_layers[-1](x)
                 
                 # 글로벌 평균 풀링
-                x = F.adaptive_avg_pool2d(x, (16, 16))
-                
-                # 트랜스포머 처리를 위한 reshape
-                batch_size = x.shape[0]
-                x = x.view(batch_size, -1, 512)  # (batch, seq_len, d_model)
-                
-                # 트랜스포머 레이어들
-                for transformer in self.transformer_layers:
-                    x = transformer(x)
-                
-                # 평균 풀링
-                x = x.mean(dim=1)  # (batch, d_model)
+                x = F.adaptive_avg_pool2d(x, (4, 4))
+                x = x.view(x.size(0), -1)
                 
                 # Dense 레이어들
                 for dense in self.dense_layers:
@@ -126,28 +112,32 @@ class IntensiveGPUWorkload:
                 return x
         
         device = torch.device(f'cuda:{device_id}')
-        model = IntensiveModel().to(device)
+        model = SafeIntensiveModel().to(device)
         return model, device
     
     def continuous_gpu_workload(self, device_id, workload_id):
-        """지속적인 GPU 워크로드 실행"""
+        """지속적인 GPU 워크로드 실행 (안전 버전)"""
         print(f"🚀 GPU {device_id} 워크로드 {workload_id} 시작")
         
         try:
             torch.cuda.set_device(device_id)
+            
+            # 메모리 정리
+            torch.cuda.empty_cache()
+            
             model, device = self.create_intensive_model(device_id)
             optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
             criterion = nn.CrossEntropyLoss()
             
-            # 큰 배치 크기로 GPU 사용률 최대화
-            batch_size = 32
+            # 더 작은 배치 크기로 시작
+            batch_size = 8
             start_time = time.time()
             iteration = 0
             
             while not self.stop_event.is_set() and (time.time() - start_time) < self.duration_seconds:
                 try:
-                    # 큰 이미지 데이터 생성
-                    input_data = torch.randn(batch_size, 3, 512, 512, device=device)
+                    # 더 작은 이미지 데이터 생성
+                    input_data = torch.randn(batch_size, 3, 256, 256, device=device)
                     target = torch.randint(0, 100, (batch_size,), device=device)
                     
                     # 순전파
@@ -159,39 +149,51 @@ class IntensiveGPUWorkload:
                     loss.backward()
                     optimizer.step()
                     
-                    # 추가 계산 집약적 연산들
-                    if iteration % 5 == 0:
-                        # 대용량 행렬 연산
-                        matrix_a = torch.randn(2048, 2048, device=device)
-                        matrix_b = torch.randn(2048, 2048, device=device)
+                    # 더 집약적이지만 안전한 연산들
+                    if iteration % 3 == 0:
+                        # 중간 크기 행렬 연산
+                        matrix_a = torch.randn(1024, 1024, device=device)
+                        matrix_b = torch.randn(1024, 1024, device=device)
                         result = torch.matmul(matrix_a, matrix_b)
                         
-                        # 고유값 분해 (매우 집약적)
-                        try:
-                            eigenvalues = torch.linalg.eigvals(result[:1024, :1024])
-                        except:
-                            pass
-                        
-                        # FFT 연산
-                        fft_input = torch.randn(8192, device=device)
+                        # 간단한 FFT 연산
+                        fft_input = torch.randn(4096, device=device)
                         fft_result = torch.fft.fft(fft_input)
                         ifft_result = torch.fft.ifft(fft_result)
                     
-                    # 메모리 압박 방지를 위한 주기적 정리
-                    if iteration % 20 == 0:
+                    # 더 빈번한 메모리 정리 (5회마다)
+                    if iteration % 5 == 0:
                         torch.cuda.empty_cache()
                         elapsed = time.time() - start_time
                         remaining = self.duration_seconds - elapsed
-                        print(f"  GPU {device_id} 워크로드 {workload_id}: {iteration} 반복 완료, "
-                              f"남은 시간: {remaining:.1f}초, Loss: {loss.item():.4f}")
+                        
+                        # 메모리 사용량 확인
+                        try:
+                            allocated = torch.cuda.memory_allocated(device_id) / 1024**3
+                            reserved = torch.cuda.memory_reserved(device_id) / 1024**3
+                            print(f"  GPU {device_id} 워크로드 {workload_id}: {iteration} 반복 완료, "
+                                  f"남은 시간: {remaining:.1f}초, Loss: {loss.item():.4f}, "
+                                  f"메모리: {allocated:.2f}GB/{reserved:.2f}GB")
+                        except Exception:
+                            print(f"  GPU {device_id} 워크로드 {workload_id}: {iteration} 반복 완료, "
+                                  f"남은 시간: {remaining:.1f}초, Loss: {loss.item():.4f}")
                     
                     iteration += 1
                     
-                except torch.cuda.OutOfMemoryError:
-                    print(f"  GPU {device_id} 메모리 부족, 배치 크기 줄임")
+                except torch.cuda.OutOfMemoryError as e:
+                    print(f"  GPU {device_id} 메모리 부족, 배치 크기 줄임: {batch_size} -> {max(1, batch_size // 2)}")
                     batch_size = max(1, batch_size // 2)
                     torch.cuda.empty_cache()
+                    time.sleep(1)  # 잠시 대기
                     continue
+                except RuntimeError as e:
+                    if "NVML" in str(e) or "CUDA" in str(e):
+                        print(f"  GPU {device_id} CUDA/NVML 오류 발생: {e}")
+                        print(f"  워크로드를 안전하게 종료합니다.")
+                        break
+                    else:
+                        print(f"  GPU {device_id} 런타임 오류: {e}")
+                        continue
                 except Exception as e:
                     print(f"  GPU {device_id} 워크로드 오류: {e}")
                     continue
@@ -200,27 +202,35 @@ class IntensiveGPUWorkload:
             
         except Exception as e:
             print(f"❌ GPU {device_id} 워크로드 {workload_id} 실패: {e}")
+        finally:
+            # 최종 메모리 정리
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
     
     def start_workloads(self):
-        """모든 GPU에서 워크로드 시작"""
-        if not torch.cuda.is_available():
+        """모든 GPU에서 워크로드 시작 (안전 버전)"""
+        if not torch.cuda.is_available() or self.device_count == 0:
             print("GPU가 사용 불가능합니다.")
             return
         
         print(f"🎯 {self.device_count}개 GPU에서 {self.duration_minutes}분 동안 집약적 워크로드 시작")
         print("   DCGM_FI_PROF_GR_ENGINE_ACTIVE 메트릭에 나타날 때까지 기다려주세요...")
+        print("   ⚠️  컨테이너 환경에서 안전 모드로 실행됩니다.")
         
-        # 각 GPU에서 여러 워크로드 실행
+        # 각 GPU에서 단일 워크로드만 실행 (안전성 향상)
         for device_id in range(self.device_count):
-            # GPU당 2개의 워크로드 스레드 실행
-            for workload_id in range(2):
-                thread = threading.Thread(
-                    target=self.continuous_gpu_workload,
-                    args=(device_id, workload_id)
-                )
-                thread.daemon = True
-                thread.start()
-                self.workload_threads.append(thread)
+            thread = threading.Thread(
+                target=self.continuous_gpu_workload,
+                args=(device_id, 0)
+            )
+            thread.daemon = True
+            thread.start()
+            self.workload_threads.append(thread)
+            
+            # GPU 간 시작 간격 (리소스 경합 방지)
+            time.sleep(2)
         
         # 시그널 핸들러 등록
         def signal_handler(signum, frame):
@@ -238,6 +248,16 @@ class IntensiveGPUWorkload:
                 elapsed = time.time() - start_time
                 remaining = self.duration_seconds - elapsed
                 print(f"⏱️  진행 중... 남은 시간: {remaining:.1f}초")
+                
+                # 주기적으로 전체 GPU 메모리 상태 확인
+                try:
+                    for i in range(self.device_count):
+                        allocated = torch.cuda.memory_allocated(i) / 1024**3
+                        reserved = torch.cuda.memory_reserved(i) / 1024**3
+                        print(f"    GPU {i} 메모리: {allocated:.2f}GB 할당, {reserved:.2f}GB 예약")
+                except Exception:
+                    pass
+                    
         except KeyboardInterrupt:
             print(f"\n🛑 사용자 중단 요청")
             self.stop_event.set()
@@ -245,9 +265,16 @@ class IntensiveGPUWorkload:
         # 모든 스레드 종료 대기
         self.stop_event.set()
         for thread in self.workload_threads:
-            thread.join(timeout=5)
+            thread.join(timeout=10)
         
-        print(f"�� 모든 GPU 워크로드 완료")
+        # 최종 메모리 정리
+        try:
+            for i in range(self.device_count):
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+        
+        print(f"🏁 모든 GPU 워크로드 완료")
 
 
 def main():

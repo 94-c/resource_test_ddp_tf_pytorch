@@ -435,3 +435,52 @@ DDP 분산 학습 테스트 실행 시 다음 파일들이 생성됩니다:
 
 - `saved_models/model_final.pth`: 최종 학습된 모델
 - `saved_models/checkpoint_epoch_*.pth`: 중간 체크포인트들 (10 에폭마다)
+
+## 🔧 문제 해결 (Troubleshooting)
+
+### NVML/CUDA 오류 해결 (컨테이너 환경)
+
+#### 1. NVML_SUCCESS 오류 해결
+```bash
+# 컨테이너 실행 시 다음 옵션 추가
+docker run --gpus all --privileged \
+  -e NVIDIA_DISABLE_REQUIRE=1 \
+  -e CUDA_LAUNCH_BLOCKING=1 \
+  -v /usr/lib/x86_64-linux-gnu/libnvidia-ml.so:/usr/lib/x86_64-linux-gnu/libnvidia-ml.so \
+  your-container-image
+
+# 또는 더 안전한 GPU 테스트 실행
+python run_tests.py pytorch gpu_utilization --duration 300  # 더 짧은 시간
+```
+
+#### 2. 환경 변수 설정
+```bash
+# GPU 메모리 관리 최적화
+export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+export CUDA_LAUNCH_BLOCKING=1
+
+# NVML 비활성화 (모니터링 제한)
+export NVIDIA_DISABLE_REQUIRE=1
+```
+
+#### 3. 안전한 집약적 GPU 테스트
+```bash
+# 단일 GPU, 짧은 시간 테스트
+python pytorch_tests/gpu_utilization_test.py --duration 300
+
+# 배치 크기 제한 버전
+PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:256 python run_tests.py pytorch gpu_utilization --duration 600
+```
+
+#### 4. 컨테이너 실행 예시 (NGC PyTorch)
+```bash
+docker run --gpus all --rm -it \
+  --shm-size=16g \
+  --ulimit memlock=-1 \
+  --ulimit stack=67108864 \
+  -e PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512 \
+  -v $(pwd):/workspace \
+  nvcr.io/nvidia/pytorch:23.07-py3
+```
+
+## 📋 시스템 요구사항
