@@ -2,11 +2,12 @@
 
 ## 📋 목차
 1. [MIG(Multi-Instance GPU) 개요](#mig-multi-instance-gpu-개요)
-2. [GPU 사용률 계산 방법의 차이점](#gpu-사용률-계산-방법의-차이점)
-3. [프로메테우스 메트릭 쿼리](#프로메테우스-메트릭-쿼리)
-4. [실제 사용 예시](#실제-사용-예시)
-5. [Grafana 대시보드 구성](#grafana-대시보드-구성)
-6. [문제 해결](#문제-해결)
+2. [DCGM(Data Center GPU Manager) 이해](#dcgm-data-center-gpu-manager-이해)
+3. [GPU 사용률 계산 방법의 차이점](#gpu-사용률-계산-방법의-차이점)
+4. [프로메테우스 메트릭 쿼리](#프로메테우스-메트릭-쿼리)
+5. [실제 사용 예시](#실제-사용-예시)
+6. [Grafana 대시보드 구성](#grafana-대시보드-구성)
+7. [문제 해결](#문제-해결)
 
 ---
 
@@ -23,6 +24,283 @@ GPU Instance Profile    | 슬라이스 | 가중치 | 메모리   | SM 개수
 3g.40gb                | 3/7      | 0.429  | 40GB     | 42
 4g.40gb                | 4/7      | 0.571  | 40GB     | 56
 7g.80gb                | 7/7      | 1.000  | 80GB     | 108
+```
+
+---
+
+## 🔧 DCGM(Data Center GPU Manager) 이해
+
+### DCGM이란?
+**Data Center GPU Manager(DCGM)**는 NVIDIA에서 제공하는 데이터센터 환경에서 GPU 모니터링, 관리, 진단을 위한 도구입니다. 특히 MIG 환경에서 GPU 리소스를 정확히 모니터링하기 위해 필수적입니다.
+
+### 🎯 DCGM의 주요 기능
+
+#### 1. GPU 메트릭 수집
+- **실시간 모니터링**: GPU 사용률, 메모리 사용량, 온도 등
+- **MIG 인스턴스 추적**: 각 MIG 인스턴스별 개별 메트릭
+- **성능 카운터**: 상세한 GPU 성능 지표
+
+#### 2. 시스템 상태 관리
+- **헬스 체크**: GPU 하드웨어 상태 모니터링
+- **오류 감지**: GPU 오류 및 경고 알림
+- **정책 기반 관리**: 임계값 설정 및 자동 대응
+
+#### 3. 프로메테우스 연동
+- **메트릭 익스포트**: 프로메테우스 형식으로 메트릭 제공
+- **라벨링**: MIG 인스턴스별 구분 가능한 라벨 제공
+- **스케일링**: 대규모 GPU 클러스터 지원
+
+### 🏗️ MIG 환경에서의 DCGM 아키텍처
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    물리적 GPU (A100)                        │
+├─────────────────┬─────────────────┬─────────────────────────┤
+│   MIG Instance  │   MIG Instance  │      MIG Instance       │
+│    1g.10gb      │    2g.20gb      │       3g.40gb          │
+│                 │                 │                         │
+│  ┌─────────────┐│  ┌─────────────┐│   ┌─────────────────┐   │
+│  │ DCGM Agent  ││  │ DCGM Agent  ││   │   DCGM Agent    │   │
+│  │  Metrics    ││  │  Metrics    ││   │    Metrics      │   │
+│  └─────────────┘│  └─────────────┘│   └─────────────────┘   │
+└─────────────────┴─────────────────┴─────────────────────────┘
+           │                 │                       │
+           ▼                 ▼                       ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │                DCGM Exporter                            │
+    │  - GPU_I_PROFILE="1g.10gb"                              │
+    │  - GPU_I_PROFILE="2g.20gb"                              │
+    │  - GPU_I_PROFILE="3g.40gb"                              │
+    └─────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+    ┌─────────────────────────────────────────────────────────┐
+    │                   Prometheus                            │
+    │  - DCGM_FI_PROF_GR_ENGINE_ACTIVE                        │
+    │  - DCGM_FI_PROF_PCIE_TX_BYTES                           │
+    │  - DCGM_FI_PROF_PCIE_RX_BYTES                           │
+    │  - DCGM_FI_DEV_MEM_COPY_UTIL                            │
+    └─────────────────────────────────────────────────────────┘
+```
+
+### 📊 주요 DCGM 메트릭 (MIG 환경)
+
+#### 1. GPU 사용률 메트릭
+```promql
+# GPU 엔진 활성도 (가장 중요한 메트릭)
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{GPU_I_PROFILE="1g.10gb"}
+
+# SM(Streaming Multiprocessor) 활성도
+DCGM_FI_PROF_SM_ACTIVE{GPU_I_PROFILE="2g.20gb"}
+
+# 텐서 코어 활성도
+DCGM_FI_PROF_TENSOR_ACTIVE{GPU_I_PROFILE="3g.40gb"}
+```
+
+#### 2. 메모리 사용률 메트릭
+```promql
+# 메모리 복사 활용률
+DCGM_FI_DEV_MEM_COPY_UTIL{GPU_I_PROFILE="1g.10gb"}
+
+# 메모리 사용량 (바이트)
+DCGM_FI_DEV_FB_USED{GPU_I_PROFILE="2g.20gb"}
+
+# 메모리 여유 공간 (바이트)
+DCGM_FI_DEV_FB_FREE{GPU_I_PROFILE="3g.40gb"}
+```
+
+#### 3. 네트워크 및 I/O 메트릭
+```promql
+# PCIe 송신 바이트
+DCGM_FI_PROF_PCIE_TX_BYTES{GPU_I_PROFILE="1g.10gb"}
+
+# PCIe 수신 바이트
+DCGM_FI_PROF_PCIE_RX_BYTES{GPU_I_PROFILE="2g.20gb"}
+
+# NVLink 대역폭 사용률
+DCGM_FI_PROF_NVLINK_TX_BYTES{GPU_I_PROFILE="3g.40gb"}
+```
+
+#### 4. 온도 및 전력 메트릭
+```promql
+# GPU 온도 (°C)
+DCGM_FI_DEV_GPU_TEMP{GPU_I_PROFILE="1g.10gb"}
+
+# 전력 소비 (W)
+DCGM_FI_DEV_POWER_USAGE{GPU_I_PROFILE="2g.20gb"}
+
+# 팬 속도 (%)
+DCGM_FI_DEV_FAN_SPEED{GPU_I_PROFILE="3g.40gb"}
+```
+
+### 🚀 DCGM 설정 및 배포
+
+#### 1. Kubernetes 환경에서 DCGM 배포
+```yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: dcgm-exporter
+  namespace: gpu-operator-resources
+spec:
+  selector:
+    matchLabels:
+      app: dcgm-exporter
+  template:
+    metadata:
+      labels:
+        app: dcgm-exporter
+    spec:
+      containers:
+      - name: dcgm-exporter
+        image: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.0-3.2.0-ubuntu22.04
+        ports:
+        - containerPort: 9400
+          name: http-metrics
+        env:
+        - name: DCGM_EXPORTER_LISTEN
+          value: ":9400"
+        - name: DCGM_EXPORTER_KUBERNETES
+          value: "true"
+        - name: DCGM_EXPORTER_COLLECTORS
+          value: "/etc/dcgm-exporter/dcp-metrics-included.csv"
+        volumeMounts:
+        - name: proc
+          mountPath: /host/proc
+          readOnly: true
+        - name: sys
+          mountPath: /host/sys
+          readOnly: true
+        securityContext:
+          privileged: true
+      volumes:
+      - name: proc
+        hostPath:
+          path: /proc
+      - name: sys
+        hostPath:
+          path: /sys
+      hostNetwork: true
+      hostPID: true
+```
+
+#### 2. DCGM 설정 커스터마이징
+```csv
+# dcp-metrics-included.csv 예시
+# 필요한 메트릭만 선택하여 성능 최적화
+DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, GPU 엔진 활성도
+DCGM_FI_PROF_SM_ACTIVE, gauge, SM 활성도
+DCGM_FI_PROF_TENSOR_ACTIVE, gauge, 텐서 코어 활성도
+DCGM_FI_DEV_MEM_COPY_UTIL, gauge, 메모리 복사 활용률
+DCGM_FI_DEV_FB_USED, gauge, 메모리 사용량
+DCGM_FI_DEV_FB_FREE, gauge, 메모리 여유 공간
+DCGM_FI_PROF_PCIE_TX_BYTES, counter, PCIe 송신 바이트
+DCGM_FI_PROF_PCIE_RX_BYTES, counter, PCIe 수신 바이트
+DCGM_FI_DEV_GPU_TEMP, gauge, GPU 온도
+DCGM_FI_DEV_POWER_USAGE, gauge, 전력 소비
+```
+
+#### 3. 프로메테우스 설정
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: 'dcgm-exporter'
+    static_configs:
+      - targets: ['dcgm-exporter:9400']
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    metrics_path: /metrics
+```
+
+### 📋 DCGM 메트릭 해석 가이드
+
+#### 1. 메트릭 값 범위 이해
+| 메트릭 | 단위 | 범위 | 의미 |
+|--------|------|------|------|
+| `DCGM_FI_PROF_GR_ENGINE_ACTIVE` | % | 0-100 | GPU 엔진 활성도 |
+| `DCGM_FI_PROF_SM_ACTIVE` | % | 0-100 | SM 활성도 |
+| `DCGM_FI_DEV_MEM_COPY_UTIL` | % | 0-100 | 메모리 복사 활용률 |
+| `DCGM_FI_DEV_FB_USED` | MB | 0-MAX | 메모리 사용량 |
+| `DCGM_FI_DEV_GPU_TEMP` | °C | 0-100+ | GPU 온도 |
+| `DCGM_FI_DEV_POWER_USAGE` | W | 0-MAX | 전력 소비 |
+
+#### 2. MIG 인스턴스 식별
+```promql
+# 라벨을 통한 MIG 인스턴스 구분
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{
+  GPU_I_PROFILE="1g.10gb",
+  GPU_I_ID="0",
+  DCGM_FI_DRIVER_VERSION="530.30.02"
+}
+```
+
+#### 3. 정상적인 메트릭 값 기준
+- **GPU 사용률**: 80% 이상 시 고부하
+- **메모리 사용률**: 90% 이상 시 주의 필요
+- **온도**: 80°C 이상 시 경고
+- **전력 소비**: 카드별 TDP 대비 90% 이상 시 주의
+
+### 🔍 DCGM 문제 해결
+
+#### 1. 메트릭이 수집되지 않는 경우
+```bash
+# DCGM 서비스 상태 확인
+systemctl status dcgm
+
+# DCGM 프로세스 확인
+ps aux | grep dcgm
+
+# DCGM 로그 확인
+journalctl -u dcgm -f
+```
+
+#### 2. MIG 인스턴스가 인식되지 않는 경우
+```bash
+# MIG 모드 확인
+nvidia-smi -q | grep -i mig
+
+# MIG 인스턴스 목록 확인
+nvidia-smi mig -lgip
+
+# DCGM 필드 확인
+dcgmi discovery -l
+```
+
+#### 3. 메트릭 값이 부정확한 경우
+```bash
+# DCGM 재시작
+systemctl restart dcgm
+
+# 메트릭 캐시 클리어
+dcgmi stats -j 0 --reset
+
+# 강제 메트릭 업데이트
+dcgmi stats -j 0 --update
+```
+
+### 💡 DCGM 성능 최적화 팁
+
+#### 1. 메트릭 수집 주기 조정
+```yaml
+# 성능 최적화를 위한 수집 주기 설정
+DCGM_EXPORTER_INTERVAL: "30s"  # 기본값보다 길게
+DCGM_EXPORTER_KUBERNETES_GPU_ID_TYPE: "device-name"
+```
+
+#### 2. 필요한 메트릭만 수집
+```bash
+# 커스텀 메트릭 설정 파일 생성
+cat > custom-metrics.csv << EOF
+DCGM_FI_PROF_GR_ENGINE_ACTIVE, gauge, GPU 엔진 활성도
+DCGM_FI_DEV_FB_USED, gauge, 메모리 사용량
+DCGM_FI_DEV_GPU_TEMP, gauge, GPU 온도
+EOF
+```
+
+#### 3. 메트릭 라벨 최적화
+```promql
+# 불필요한 라벨 제거로 성능 향상
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{GPU_I_PROFILE="1g.10gb"}
 ```
 
 ---
