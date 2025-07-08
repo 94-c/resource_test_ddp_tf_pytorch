@@ -15,6 +15,71 @@
 | 4g.20gb    | 0.571  | 57.1% (4/7 컴퓨팅 슬라이스) |
 | 7g.40gb    | 1.000  | 100% (7/7 컴퓨팅 슬라이스) |
 
+## 🚨 **MIG vs 일반 GPU 구분 방법**
+
+### **⚡ 빠른 구분법**
+```bash
+# DCGM 메트릭에서 확인
+GPU_I_PROFILE 라벨 존재 여부 확인:
+- 있음 → MIG 환경 (가중 평균 사용)
+- 없음 → 일반 GPU 환경 (단순 쿼리 사용)
+```
+
+### **📊 환경별 특징 비교**
+
+| 구분 | MIG 환경 | 일반 GPU 환경 |
+|------|----------|---------------|
+| **GPU_I_PROFILE** | ✅ 있음 (`1g.10gb`, `2g.20gb` 등) | ❌ 없음 |
+| **GPU_I_ID** | ✅ 있음 (MIG 인스턴스 ID) | ❌ 없음 |
+| **device** | `nvidia0-mig-xxx` 형태 | `nvidia0` 형태 |
+| **지원 GPU** | A100, A30, H100 | V100, P100, T4, RTX |
+| **사용률 계산** | 평균 또는 가중 평균 | 단순 메트릭 × 100 |
+
+### **🔍 실제 메트릭 예시**
+
+#### **MIG 환경 (A100)**
+```bash
+{
+  DCGM_FI_DEV_NAME="NVIDIA A100-SXM4-80GB",
+  GPU_I_PROFILE="1g.10gb",           # ← 이게 있으면 MIG
+  GPU_I_ID="8",                      # ← MIG 인스턴스 ID
+  device="nvidia0-mig-1g.10gb",      # ← MIG 디바이스
+  gpu="0",
+  pod="mig-pod-example"
+}
+```
+
+#### **일반 GPU 환경 (V100)**
+```bash
+{
+  DCGM_FI_DEV_NAME="Tesla V100-PCIE-32GB",
+  device="nvidia0",                   # ← 일반 GPU 디바이스
+  gpu="0",                           # ← 물리적 GPU 0번
+  pod="regular-gpu-pod"
+  # GPU_I_PROFILE 없음               # ← 이게 없으면 일반 GPU
+}
+```
+
+### **🎯 GPU 아키텍처별 MIG 지원**
+
+#### **✅ MIG 지원 (Ampere/Hopper)**
+```bash
+- A100 80GB
+- A100 40GB  
+- A30
+- H100
+- H200
+```
+
+#### **❌ MIG 미지원 (이전 아키텍처)**
+```bash
+- V100 (Volta)
+- P100 (Pascal)
+- T4 (Turing)
+- RTX 시리즈
+- GTX 시리즈
+```
+
 ## 🔧 **MIG 슬라이싱 개념과 avg 사용 이유**
 
 ### 🎯 **핵심 질문: 왜 avg를 사용하는가?**
@@ -139,29 +204,80 @@ Pod B 사용률 = (50% × 0.143 + 80% × 0.286) / (0.143 + 0.286) = 69.7%
 
 ## 🔧 실무 적용
 
-### **Prometheus 쿼리 예시**
+### **🎯 환경별 쿼리 선택 가이드**
 
-#### 1. 단순 평균 (동일 프로필 시 권장)
-```prometheus
-avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name"}) * 100
+#### **1단계: 환경 구분**
+```bash
+# DCGM 메트릭 확인
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name"}
+
+# GPU_I_PROFILE 라벨 존재 여부 확인
+- 있음 → MIG 환경 (2-4번 쿼리 사용)
+- 없음 → 일반 GPU 환경 (1번 쿼리 사용)
 ```
 
-#### 2. 가중 평균 (혼합 프로필 시 권장)
+### **Prometheus 쿼리 예시**
+
+#### **1. 일반 GPU 환경 (V100, P100, T4 등)**
 ```prometheus
-# 1g.10gb 프로필만 사용하는 경우
+# Tesla V100, P100, T4 등 MIG 미지원 GPU용
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name"} * 100
+
+# 실제 사용 예시
+DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="wl-f0ed4e9e-1989-4ff0-8277-1c74cd5e55eb-548f8b5749-tmcs2"} * 100
+# 결과: 98.29 (Tesla V100 사용률 98.29%)
+```
+
+#### **2. MIG 환경 - 단순 평균 (동일 프로필 시)**
+```prometheus
+# 1g.10gb × 2개 등 동일 프로필 사용 시
+avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name"}) * 100
+
+# 실제 사용 예시
+avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="wl-dda582f7-4d74-4d67-9b52-a91aeeac7ac0-858c47bbd5-nlmfg"}) * 100
+```
+
+#### **3. MIG 환경 - 가중 평균 (단일 프로필)**
+```prometheus
+# 1g.10gb만 사용하는 경우
 (
   sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"} * 0.143)
 ) / (
   count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"}) * 0.143
 ) * 100
 
-# 혼합 프로필 사용하는 경우
+# 실제 사용 예시
+(
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="wl-dda582f7-4d74-4d67-9b52-a91aeeac7ac0-858c47bbd5-nlmfg", GPU_I_PROFILE="1g.10gb"} * 0.143)
+) / (
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="wl-dda582f7-4d74-4d67-9b52-a91aeeac7ac0-858c47bbd5-nlmfg", GPU_I_PROFILE="1g.10gb"}) * 0.143
+) * 100
+```
+
+#### **4. MIG 환경 - 가중 평균 (혼합 프로필)**
+```prometheus
+# 1g.10gb + 2g.20gb 혼합 사용 시
 (
   sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"} * 0.143) +
   sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="2g.20gb"} * 0.286)
 ) / (
   count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"}) * 0.143 +
   count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="2g.20gb"}) * 0.286
+) * 100
+
+# 범용 쿼리 (모든 MIG 프로필 자동 처리)
+(
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"} * 0.143) +
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="2g.20gb"} * 0.286) +
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="3g.20gb"} * 0.429) +
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="4g.20gb"} * 0.571) +
+  sum(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="7g.40gb"} * 1.000)
+) / (
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="1g.10gb"}) * 0.143 +
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="2g.20gb"}) * 0.286 +
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="3g.20gb"}) * 0.429 +
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="4g.20gb"}) * 0.571 +
+  count(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name", GPU_I_PROFILE="7g.40gb"}) * 1.000
 ) * 100
 ```
 
@@ -207,29 +323,58 @@ avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="your-pod-name"}) * 100
 
 ## 🎯 실무 권장사항
 
-### **언제 어떤 방법을 사용할까?**
+### **🔍 환경별 쿼리 선택 가이드**
 
-#### ✅ **단순 평균 사용** (더 간단)
+#### **1️⃣ 일반 GPU 환경** (V100, P100, T4 등)
+```bash
+# 조건: GPU_I_PROFILE 라벨 없음
+# 사용 쿼리: DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="xxx"} * 100
+# 장점: 단순명료, 즉시 사용 가능
+```
+
+#### **2️⃣ MIG 환경 - 단순 평균** (동일 프로필)
 ```bash
 # 조건: 동일한 MIG 프로필만 사용
 # 예시: 1g.10gb × 2개, 2g.20gb × 3개
+# 사용 쿼리: avg(DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="xxx"}) * 100
 # 장점: 계산 간단, 결과 동일
 ```
 
-#### ✅ **가중 평균 사용** (더 정확)
+#### **3️⃣ MIG 환경 - 가중 평균** (혼합 프로필)
 ```bash
 # 조건: 서로 다른 MIG 프로필 혼합 사용
 # 예시: 1g.10gb × 1개 + 2g.20gb × 1개
+# 사용 쿼리: 가중 평균 공식
 # 장점: 실제 하드웨어 자원 반영
 ```
 
-### **구현 체크리스트**
-1. **Pod MIG 프로필 확인**: `kubectl describe pod <pod-name>`
-2. **DCGM 메트릭 존재 확인**: `DCGM_FI_PROF_GR_ENGINE_ACTIVE`
-3. **프로필 동일성 판단**: 같으면 단순 평균, 다르면 가중 평균
-4. **Prometheus 쿼리 구현**: 위 예시 참조
+### **🔧 구현 체크리스트**
+1. **GPU 타입 확인**: `kubectl describe node <node-name>` → V100/A100 구분
+2. **Pod 메트릭 확인**: `DCGM_FI_PROF_GR_ENGINE_ACTIVE{pod="xxx"}` → 라벨 존재 여부
+3. **환경 판단**: 
+   - `GPU_I_PROFILE` 없음 → 일반 GPU (1번 쿼리)
+   - `GPU_I_PROFILE` 있음 → MIG (2-3번 쿼리)
+4. **MIG 프로필 동일성 확인**: 같으면 단순 평균, 다르면 가중 평균
+5. **Prometheus 쿼리 구현**: 위 예시 참조
+
+### **⚠️ 주의사항**
+- **잘못된 쿼리 사용**: V100에서 MIG 쿼리 사용 시 값 없음
+- **Pod 이름 오류**: 정확한 Pod 이름 사용 필요
+- **쿼리 구조 오류**: `count(metric * weight)` 대신 `count(metric) * weight` 사용
 
 ## 💡 FAQ
+
+### Q: 내 Pod가 MIG 환경인지 일반 GPU 환경인지 어떻게 확인하나?
+**A**: DCGM 메트릭에서 `GPU_I_PROFILE` 라벨 확인. 있으면 MIG, 없으면 일반 GPU
+
+### Q: V100 GPU에서 MIG 쿼리를 사용하면 안 되나?
+**A**: V100은 MIG 미지원. 단순 쿼리(`DCGM_FI_PROF_GR_ENGINE_ACTIVE * 100`) 사용 필요
+
+### Q: MIG 환경에서 가중 평균 쿼리가 작동하지 않는 이유는?
+**A**: 
+- Pod 이름 오류: 다른 Pod 이름 사용 시 메트릭 없음
+- 쿼리 구조 오류: `count(metric * weight)` 대신 `count(metric) * weight` 사용
+- 프로필 불일치: 실제 사용 중인 프로필과 쿼리 프로필 다름
 
 ### Q: 가중치는 어디서 나온 값인가?
 **A**: NVIDIA 공식 하드웨어 스펙 (A100 80GB 컴퓨팅 슬라이스 비율)
